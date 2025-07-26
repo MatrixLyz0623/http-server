@@ -7,6 +7,38 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <sstream>
+
+class HttpRequestParser {
+public:
+    bool parse(const std::string& buffer);
+    const std::string& get_method() const;
+    const std::string& get_path() const;
+
+private:
+    std::string method;
+    std::string path;
+};
+
+bool HttpRequestParser::parse(const std::string& buffer) {
+    std::istringstream stream(buffer);
+    std::string line;
+
+    if (std::getline(stream, line)) {
+        std::istringstream linestream(line);
+        linestream >> method >> path;
+        return !method.empty() && !path.empty(); // 确保解析成功
+    }
+    return false;
+}
+
+const std::string& HttpRequestParser::get_method() const {
+    return method;
+}
+
+const std::string& HttpRequestParser::get_path() const {
+    return path;
+}
 
 int main(int argc, char **argv) {
   // Flush after every std::cout / std::cerr
@@ -46,16 +78,36 @@ int main(int argc, char **argv) {
     return 1;
   }
   //
-  struct sockaddr_in client_addr;
-  int client_addr_len = sizeof(client_addr);
+  while (true) {
+    struct sockaddr_in client_addr;
+    int client_addr_len = sizeof(client_addr);
+
+    std::cout << "Waiting for a client to connect...\n";
+    
+    int client_scoket = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
+    std::cout << "Client connected\n";
   
-  std::cout << "Waiting for a client to connect...\n";
-  
-  int client_scoket = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
-  std::cout << "Client connected\n";
-  send(client_scoket,"HTTP/1.1 200 OK\r\n\r\n",20,0);
-  shutdown(client_scoket, SHUT_WR); 
-  close(server_fd);
+    char buffer[4096] = {};
+    HttpRequestParser parser;
+    ssize_t byteReads = read(client_scoket, buffer, sizeof(buffer));
+    if (byteReads < 0 ) {
+      std::cerr << "Read Error From Client";
+      return 1;
+    }
+    parser.parse(buffer);
+    if (parser.get_path() != "/") {
+      const char* response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+      send(client_scoket, "HTTP/1.1 404 Not Found\r\n\r\n", strlen(response), 0);
+    } else {
+      const char* response = "HTTP/1.1 200 OK\r\n\r\n";
+      send(client_scoket,"HTTP/1.1 200 OK\r\n\r\n",20,0);
+    }
+
+    shutdown(client_scoket, SHUT_WR); 
+  }
+
+    close(server_fd);
+
 
   return 0;
 }
