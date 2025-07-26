@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
   
   int client_scoket = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
   std::cout << "Client connected\n";
-  send(client_scoket,"HTTP/1.1 200 OK \r\n\r\n",19,0);
+  send(client_scoket,"HTTP/1.1 200 OK \r\n\r\n",20,0);
   shutdown(client_scoket, SHUT_WR); 
   close(server_fd);
 
