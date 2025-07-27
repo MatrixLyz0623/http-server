@@ -8,6 +8,8 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <sstream>
+#include <functional>
+
 
 class HttpRequestParser {
 public:
@@ -27,7 +29,7 @@ bool HttpRequestParser::parse(const std::string& buffer) {
     if (std::getline(stream, line)) {
         std::istringstream linestream(line);
         linestream >> method >> path;
-        return !method.empty() && !path.empty(); // 确保解析成功
+        return !method.empty() && !path.empty(); 
     }
     return false;
 }
@@ -39,6 +41,109 @@ const std::string& HttpRequestParser::get_method() const {
 const std::string& HttpRequestParser::get_path() const {
     return path;
 }
+
+class HttpResponse {
+public:
+    static HttpResponse ok(const std::string& body);
+    static HttpResponse notFound();
+
+    HttpResponse(const HttpResponse& other)
+        : status_code_(other.status_code_),
+          status_text_(other.status_text_),
+          content_type_(other.content_type_),
+          body_(other.body_) {
+        std::cout << "copy construct" << std::endl;
+    }
+
+    HttpResponse(HttpResponse&& other)
+        : status_code_(other.status_code_),
+          status_text_(std::move(other.status_text_)),
+          content_type_(std::move(other.content_type_)),
+          body_(std::move(other.body_)) {
+        std::cout << "move construct" << std::endl;
+    }
+
+    HttpResponse(int status_code,
+                 std::string status_text,
+                 std::string content_type,
+                 std::string body)
+        : status_code_(status_code),
+          status_text_(std::move(status_text)),
+          content_type_(std::move(content_type)),
+          body_(std::move(body)) {
+            std::cout<< "construct" << std::endl;
+          }
+
+    std::string to_string() const;
+
+private:
+    int status_code_;
+    std::string status_text_;
+    std::string content_type_;
+    std::string body_;
+};
+
+
+HttpResponse HttpResponse::ok(const std::string& body = "") {
+    std::cout<<"call OK"<< std::endl;
+    return HttpResponse(200, "OK", "text/plain", body);
+}
+
+HttpResponse HttpResponse::notFound() {
+    return HttpResponse(404, "NotFound", "text/plain", "404 Not Found");
+}
+
+std::string HttpResponse::to_string() const {
+    std::ostringstream os;
+    os << "HTTP/1.1 " << status_code_ << " " << status_text_ << "\r\n";
+    if (!content_type_.empty()) {
+        os << "Content-Type: " << content_type_ << "\r\n";
+    }
+    os << "Content-Length: " << body_.size() << "\r\n";
+    os << "\r\n";
+    os << body_;
+    return os.str();
+}
+
+class Dispatcher {
+public:
+    using Handler = std::function<HttpResponse(const std::string& path)>;
+
+    void registerHandler(const std::string& path, Handler handler);
+    void registerHandlerPrefix(const std::string& prefix, Handler handler);
+    HttpResponse dispatch(const std::string& path) const;
+
+private:
+    std::unordered_map<std::string, Handler> exactRoutes_;
+    std::vector<std::pair<std::string, Handler>> prefixRoutes_;
+};
+
+void Dispatcher::registerHandler(const std::string& path, Handler handler) {
+    exactRoutes_[path] = std::move(handler);
+}
+
+void Dispatcher::registerHandlerPrefix(const std::string& prefix, Handler handler) {
+    prefixRoutes_.emplace_back(prefix, std::move(handler));
+}
+
+HttpResponse Dispatcher::dispatch(const std::string& path) const {
+    // 精确匹配
+    auto it = exactRoutes_.find(path);
+    if (it != exactRoutes_.end()) {
+        return it->second(path);
+    }
+
+    // 前缀匹配
+    for (auto it = prefixRoutes_.begin(); it != prefixRoutes_.end(); ++it) {
+        if (path.rfind(it->first, 0) == 0) {
+            return it->second(path);
+        }
+    }
+
+    // 未匹配
+    return HttpResponse::notFound();
+}
+
 
 int main(int argc, char **argv) {
   // Flush after every std::cout / std::cerr
@@ -77,7 +182,20 @@ int main(int argc, char **argv) {
     std::cerr << "listen failed\n";
     return 1;
   }
-  //
+
+
+  //register
+  Dispatcher dispatcher;
+
+  dispatcher.registerHandler("/", [](const std::string& path) {
+      return HttpResponse::ok("Welcome to the homepage!");
+  });
+
+  dispatcher.registerHandlerPrefix("/echo/", [](const std::string& path) {
+      std::string body = path.substr(6); // 去掉 "/echo/"
+      return HttpResponse::ok(body);
+  });
+
   while (true) {
     struct sockaddr_in client_addr;
     int client_addr_len = sizeof(client_addr);
@@ -95,20 +213,11 @@ int main(int argc, char **argv) {
       return 1;
     }
     parser.parse(buffer);
-    if (parser.get_path() == "/") {
-      const char* response = "HTTP/1.1 200 OK\r\n\r\n";
-      send(client_scoket,"HTTP/1.1 200 OK\r\n\r\n",20,0);
-    } else if (parser.get_path().rfind("/echo/", 0) == 0) {
-      std::string echoBody = parser.get_path().substr(6);
-      std::ostringstream os;
-      os << "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length:" << echoBody.size() << "\r\n\r\n" << echoBody << "\r\n";
-      std::string res = os.str();
-      send(client_scoket, res.c_str(), res.size(), 0);
-    }
-    else {
-      const char* response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-      send(client_scoket, "HTTP/1.1 404 Not Found\r\n\r\n", strlen(response), 0);
-    }
+    std::string path = parser.get_path();
+    HttpResponse response = dispatcher.dispatch(path);
+    std::string responseStr = response.to_string();
+
+    send(client_scoket, responseStr.c_str(), responseStr.size(), 0);
 
     shutdown(client_scoket, SHUT_WR); 
   }
