@@ -95,12 +95,19 @@ int main(int argc, char **argv) {
       return 1;
     }
     parser.parse(buffer);
-    if (parser.get_path() != "/") {
-      const char* response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-      send(client_scoket, "HTTP/1.1 404 Not Found\r\n\r\n", strlen(response), 0);
-    } else {
+    if (parser.get_path() == "/") {
       const char* response = "HTTP/1.1 200 OK\r\n\r\n";
       send(client_scoket,"HTTP/1.1 200 OK\r\n\r\n",20,0);
+    } else if (parser.get_path().rfind("/echo/", 0) == 0) {
+      std::string echoBody = parser.get_path().substr(6);
+      std::ostringstream os;
+      os << "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length:" << echoBody.size() << "\r\n\r\n" << echoBody << "\r\n";
+      std::string res = os.str();
+      send(client_scoket, res.c_str(), res.size(), 0);
+    }
+    else {
+      const char* response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+      send(client_scoket, "HTTP/1.1 404 Not Found\r\n\r\n", strlen(response), 0);
     }
 
     shutdown(client_scoket, SHUT_WR); 
