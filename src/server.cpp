@@ -9,6 +9,7 @@
 #include <netdb.h>
 #include <sstream>
 #include <functional>
+#include <algorithm>
 
 
 class HttpRequestParser {
@@ -16,11 +17,19 @@ public:
     bool parse(const std::string& buffer);
     const std::string& get_method() const;
     const std::string& get_path() const;
+    std::string get_header(const std::string& key) const;
 
 private:
     std::string method;
     std::string path;
+    std::unordered_map<std::string , std::string> header;
 };
+
+std::string trim(const std::string& s) {
+    auto start = std::find_if_not(s.begin(), s.end(), ::isspace);
+    auto end = std::find_if_not(s.rbegin(), s.rend(), ::isspace).base();
+    return (start < end ? std::string(start, end) : "");
+}
 
 bool HttpRequestParser::parse(const std::string& buffer) {
     std::istringstream stream(buffer);
@@ -29,9 +38,17 @@ bool HttpRequestParser::parse(const std::string& buffer) {
     if (std::getline(stream, line)) {
         std::istringstream linestream(line);
         linestream >> method >> path;
-        return !method.empty() && !path.empty(); 
     }
-    return false;
+
+    while(std::getline(stream, line) && line != "\r") {
+        auto pos = line.find(":");
+        std::string key = line.substr(0,pos);
+        std::string value = line.substr(pos+1);
+        key = trim(key);
+        value = trim(value);
+        header[key] = value;
+    }
+    return true;
 }
 
 const std::string& HttpRequestParser::get_method() const {
@@ -40,6 +57,11 @@ const std::string& HttpRequestParser::get_method() const {
 
 const std::string& HttpRequestParser::get_path() const {
     return path;
+}
+
+std::string HttpRequestParser::get_header(const std::string& key) const {
+    auto it = header.find(key);
+    return it != header.end() ? it->second : "";
 }
 
 class HttpResponse {
@@ -84,7 +106,7 @@ private:
 };
 
 
-HttpResponse HttpResponse::ok(const std::string& body = "") {
+HttpResponse HttpResponse::ok(const std::string& body ) {
     std::cout<<"call OK"<< std::endl;
     return HttpResponse(200, "OK", "text/plain", body);
 }
@@ -107,36 +129,44 @@ std::string HttpResponse::to_string() const {
 
 class Dispatcher {
 public:
-    using Handler = std::function<HttpResponse(const std::string& path)>;
+    using Handler = std::function<HttpResponse(const HttpRequestParser& req)>;
 
-    void registerHandler(const std::string& path, Handler handler);
-    void registerHandlerPrefix(const std::string& prefix, Handler handler);
-    HttpResponse dispatch(const std::string& path) const;
+    void registerHandler(const std::string& method, const std::string& path, Handler handler);
+    void registerHandlerPrefix(const std::string& method, const std::string& prefix, Handler handler);
+    HttpResponse dispatch(const HttpRequestParser& req) const;
 
 private:
-    std::unordered_map<std::string, Handler> exactRoutes_;
-    std::vector<std::pair<std::string, Handler>> prefixRoutes_;
+    std::unordered_map<std::string, std::unordered_map<std::string, Handler>> exactRoutes_;
+    std::unordered_map<std::string, std::vector<std::pair<std::string, Handler>>> prefixRoutes_;
 };
 
-void Dispatcher::registerHandler(const std::string& path, Handler handler) {
-    exactRoutes_[path] = std::move(handler);
+void Dispatcher::registerHandler(const std::string& method, const std::string& path, Handler handler) {
+    exactRoutes_[method][path] = std::move(handler);
 }
 
-void Dispatcher::registerHandlerPrefix(const std::string& prefix, Handler handler) {
-    prefixRoutes_.emplace_back(prefix, std::move(handler));
+void Dispatcher::registerHandlerPrefix(const std::string& method, const std::string& prefix, Handler handler) {
+    prefixRoutes_[method].emplace_back(prefix, std::move(handler));
 }
 
-HttpResponse Dispatcher::dispatch(const std::string& path) const {
+HttpResponse Dispatcher::dispatch(const HttpRequestParser& request) const {
     // 精确匹配
-    auto it = exactRoutes_.find(path);
+    auto it = exactRoutes_.find(request.get_method());
     if (it != exactRoutes_.end()) {
-        return it->second(path);
+        const auto& pathMap = it->second;
+        auto mit = pathMap.find(request.get_path());
+        if (mit != pathMap.end()) {
+            return mit->second(request);
+        }
     }
 
     // 前缀匹配
-    for (auto it = prefixRoutes_.begin(); it != prefixRoutes_.end(); ++it) {
-        if (path.rfind(it->first, 0) == 0) {
-            return it->second(path);
+    auto iit = prefixRoutes_.find(request.get_method());
+    if (iit != prefixRoutes_.end()) {
+        const auto& prefixvec = iit->second;
+        for(auto [prefix, handler]:prefixvec) {
+            if (request.get_path().rfind(prefix,0) == 0) {
+                return handler(request);
+            }
         }
     }
 
@@ -187,13 +217,18 @@ int main(int argc, char **argv) {
   //register
   Dispatcher dispatcher;
 
-  dispatcher.registerHandler("/", [](const std::string& path) {
+  dispatcher.registerHandler("GET", "/", [](const HttpRequestParser& req) {
       return HttpResponse::ok("Welcome to the homepage!");
   });
 
-  dispatcher.registerHandlerPrefix("/echo/", [](const std::string& path) {
-      std::string body = path.substr(6); // 去掉 "/echo/"
+  dispatcher.registerHandlerPrefix("GET", "/echo/" ,[](const HttpRequestParser& req) {
+      std::string body = req.get_path().substr(6); // 去掉 "/echo/"
       return HttpResponse::ok(body);
+  });
+
+  dispatcher.registerHandler("GET", "/user-agent", [](const HttpRequestParser& req) {
+     std::string body = req.get_header("User-Agent");
+     return HttpResponse::ok(body);
   });
 
   while (true) {
@@ -213,8 +248,7 @@ int main(int argc, char **argv) {
       return 1;
     }
     parser.parse(buffer);
-    std::string path = parser.get_path();
-    HttpResponse response = dispatcher.dispatch(path);
+    HttpResponse response = dispatcher.dispatch(parser);
     std::string responseStr = response.to_string();
 
     send(client_scoket, responseStr.c_str(), responseStr.size(), 0);
