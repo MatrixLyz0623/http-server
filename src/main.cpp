@@ -10,10 +10,34 @@
 #include <sstream>
 #include <functional>
 #include <algorithm>
+#include <thread>
+#include <fstream>
 
 #include "http_parser.h"
 #include "http_response.h"
 #include "dispatcher.h"
+
+void handle_client(int client_socket, const Dispatcher& dispatcher) {
+    char buffer[4096] = {};
+    HttpRequestParser parser;
+
+    ssize_t byteReads = read(client_socket, buffer, sizeof(buffer));
+    if (byteReads < 0) {
+        std::cerr << "Read Error From Client\n";
+        close(client_socket);
+        return;
+    }
+    std::cout << "Read " << byteReads << " bytes\n";
+    std::cout << "Raw request:\n" << std::string(buffer, byteReads) << std::endl;
+    parser.parse(buffer);
+    std::cout << "method: " << parser.get_method() << std::endl;
+    HttpResponse response = dispatcher.dispatch(parser);
+    std::string responseStr = response.to_string();
+
+    send(client_socket, responseStr.c_str(), responseStr.size(), 0);
+    shutdown(client_socket, SHUT_WR);
+    close(client_socket);
+}
 
 int main(int argc, char **argv) {
   // Flush after every std::cout / std::cerr
@@ -71,32 +95,50 @@ int main(int argc, char **argv) {
      return HttpResponse::ok(body);
   });
 
+  dispatcher.registerHandlerPrefix("GET", "/files/", [](const HttpRequestParser& req) {
+    std::string filename = req.get_path().substr(7);
+    std::string fullPath = "/tmp/" + filename;
+    std::ifstream file(fullPath, std::ios::binary);
+    std::cout << "Attempting to open: " << fullPath << std::endl;
+    if (file) {
+      std::ostringstream oos;
+      oos << file.rdbuf();
+      std::string body = oos.str();
+      return HttpResponse(200, "OK", "application/octet-stream", body);
+    } else {
+      return HttpResponse::notFound();
+    }
+  });
+
+    dispatcher.registerHandlerPrefix("POST", "/files/", [](const HttpRequestParser& req) {
+    std::string filename = req.get_path().substr(7);
+    std::string fullPath = "/tmp/" + filename;
+    std::ofstream file(fullPath, std::ios::binary);
+    std::cout << "Attempting to open: " << fullPath << std::endl;
+    if (file) {
+      file << req.get_body();
+      return HttpResponse(201, "Created", "", "File created");
+    } else {
+        return HttpResponse(500, "Internal Server Error", "text/plain", "Could not create file");
+    }
+  });
+
   while (true) {
     struct sockaddr_in client_addr;
     int client_addr_len = sizeof(client_addr);
 
     std::cout << "Waiting for a client to connect...\n";
     
-    int client_scoket = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
-    std::cout << "Client connected\n";
-  
-    char buffer[4096] = {};
-    HttpRequestParser parser;
-    ssize_t byteReads = read(client_scoket, buffer, sizeof(buffer));
-    if (byteReads < 0 ) {
-      std::cerr << "Read Error From Client";
-      return 1;
+    int client_socket  = accept(server_fd, (struct sockaddr *) &client_addr, (socklen_t *) &client_addr_len);
+    if (client_socket < 0) {
+        std::cerr << "Failed to accept connection";
+        continue;
     }
-    parser.parse(buffer);
-    HttpResponse response = dispatcher.dispatch(parser);
-    std::string responseStr = response.to_string();
-
-    send(client_scoket, responseStr.c_str(), responseStr.size(), 0);
-
-    shutdown(client_scoket, SHUT_WR); 
+    std::thread t(handle_client, client_socket, std::ref(dispatcher));
+    t.detach();
   }
 
-    close(server_fd);
+  close(server_fd);
 
 
   return 0;

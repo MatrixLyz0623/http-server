@@ -25,6 +25,10 @@ bool HttpRequestParser::parse(const std::string& buffer) {
             header[key] = value;
         }
     }
+    if(header.find("Content-Length") != header.end()) {
+        ssize_t headerEnd = buffer.find("\r\n\r\n");
+        body = buffer.substr(headerEnd+4);
+    }
 
     return true;
 }
@@ -35,3 +39,5 @@ std::string HttpRequestParser::get_header(const std::string& key) const {
     auto it = header.find(key);
     return it != header.end() ? it->second : "";
 }
+
+const std::string& HttpRequestParser::get_body() const {return body;}
