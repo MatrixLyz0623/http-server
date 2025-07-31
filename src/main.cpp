@@ -16,6 +16,7 @@
 #include "http_parser.h"
 #include "http_response.h"
 #include "dispatcher.h"
+#include "compress.h"
 
 void handle_client(int client_socket, const Dispatcher& dispatcher) {
     char buffer[4096] = {};
@@ -100,11 +101,27 @@ int main(int argc, char **argv) {
     std::string fullPath = "/tmp/" + filename;
     std::ifstream file(fullPath, std::ios::binary);
     std::cout << "Attempting to open: " << fullPath << std::endl;
+
     if (file) {
       std::ostringstream oos;
       oos << file.rdbuf();
       std::string body = oos.str();
-      return HttpResponse(200, "OK", "application/octet-stream", body);
+      CompressionType compressType = select_compression(req.get_header("Accept-Encoding"));
+      if (compressType != CompressionType::None) {
+        switch (compressType) {
+            case CompressionType::Gzip: {
+                std::string compressed = gzip_compress(body);
+                return HttpResponse(200, "OK", "text/plain", compressed);
+                break;
+            }
+            case CompressionType::None:
+            default:
+                return HttpResponse(200, "OK", "text/plain", body);
+                break;
+        }
+      } else {
+        return HttpResponse(200, "OK", "application/octet-stream", body);
+      }
     } else {
       return HttpResponse::notFound();
     }
