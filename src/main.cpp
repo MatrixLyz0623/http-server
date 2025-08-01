@@ -17,26 +17,43 @@
 #include "http_response.h"
 #include "dispatcher.h"
 #include "compress.h"
+#include "thread_pool.h"
 
 void handle_client(int client_socket, const Dispatcher& dispatcher) {
-    char buffer[4096] = {};
-    HttpRequestParser parser;
+    char buffer[4096];
+    std::string request_data;
 
-    ssize_t byteReads = read(client_socket, buffer, sizeof(buffer));
-    if (byteReads < 0) {
-        std::cerr << "Read Error From Client\n";
-        close(client_socket);
-        return;
+    while (true) {
+        ssize_t bytesRead = recv(client_socket, buffer, sizeof(buffer), 0);
+        if (bytesRead <= 0) break;
+
+        request_data.append(buffer, bytesRead);
+
+        HttpRequestParser parser;
+        if (!parser.parse(request_data)) {
+            continue;
+        }
+
+        HttpResponse response = dispatcher.dispatch(parser);
+
+        // Keep-Alive 简化处理
+        std::string conn = parser.get_header("Connection");
+        bool keep_alive = (conn != "close") ||
+                          conn == "keep-alive";
+        response.headers()["Connection"] = keep_alive ? "keep-alive" : "close";
+
+        std::string resp_str = response.to_string();
+        send(client_socket, resp_str.c_str(), resp_str.size(), 0);
+
+        if (!keep_alive) {
+            std::cout<< "close client"<<std::endl;
+            shutdown(client_socket, SHUT_WR);
+            break;
+        }
+
+        request_data.clear();  
     }
-    std::cout << "Read " << byteReads << " bytes\n";
-    std::cout << "Raw request:\n" << std::string(buffer, byteReads) << std::endl;
-    parser.parse(buffer);
-    std::cout << "method: " << parser.get_method() << std::endl;
-    HttpResponse response = dispatcher.dispatch(parser);
-    std::string responseStr = response.to_string();
-
-    send(client_socket, responseStr.c_str(), responseStr.size(), 0);
-    shutdown(client_socket, SHUT_WR);
+    std::cout<< "close client"<<std::endl;
     close(client_socket);
 }
 
@@ -139,7 +156,7 @@ int main(int argc, char **argv) {
         return HttpResponse(500, "Internal Server Error", "text/plain", "Could not create file");
     }
   });
-
+  ThreadPool pool(4);
   while (true) {
     struct sockaddr_in client_addr;
     int client_addr_len = sizeof(client_addr);
@@ -151,8 +168,9 @@ int main(int argc, char **argv) {
         std::cerr << "Failed to accept connection";
         continue;
     }
-    std::thread t(handle_client, client_socket, std::ref(dispatcher));
-    t.detach();
+    pool.enqueue([client_socket, &dispatcher]{
+        handle_client(client_socket, dispatcher);
+    });
   }
 
   close(server_fd);
